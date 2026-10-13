@@ -1,0 +1,51 @@
+# ~/.config/ultradisplay/config.toml (every key is optional; these are the defaults)
+
+# TCP port the tablet app connects to (through `adb reverse` over USB).
+port = 47800
+
+# Name of the niri virtual output created for the tablet.
+output = "UD-1"
+
+# Output scale. The Tab S7+ panel is 2800x1752:
+#   2.0 -> 1400x876 logical (large UI)   1.5 -> 1867x1168   1.25 -> 2240x1402
+scale = 2.0
+
+# Where the tablet goes, relative to the monitor at (0, 0):
+#   "auto"   niri places it right of your other outputs
+#   "left" / "right"   beside that monitor, top edges aligned
+#   "above" / "below"  above/below that monitor, left edges aligned
+#   "manual" at `position` (logical [x, y])
+placement = "auto"
+# position = [1920, 0]
+
+# Maximum USB video bitrate in Mbit/s (adapted down on congestion).
+bitrate_mbps = 80
+
+# Upper bound for the stream frame rate (the tablet reports what it supports).
+max_fps = 120
+
+# Keep the virtual output (and its windows) when the tablet disconnects or its screen
+# turns off.
+keep_output = false
+
+# Accept the tablet over the USB cable (127.0.0.1 through `adb reverse`).
+usb = true
+
+# Set up `adb reverse` automatically for USB-connected tablets.
+adb = true
+
+# Accept paired tablets over Wi-Fi (TLS) and advertise this PC via mDNS.
+lan = true
+
+# TCP port of the Wi-Fi (TLS) listener.
+lan_port = 47801
+
+# Maximum Wi-Fi video bitrate in Mbit/s (adapted down on congestion).
+lan_bitrate_mbps = 40
+
+# Keep frames on the GPU (niri DMA-BUF -> CUDA -> NVENC, no CPU copies). Falls back to
+# shared-memory capture automatically if the import fails.
+zero_copy = true
+
+# Seconds between the periodic statistics lines in the log (0 = never).
+stats_log_secs = 5

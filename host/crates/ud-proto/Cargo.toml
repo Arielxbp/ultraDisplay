@@ -1,0 +1,11 @@
+[package]
+name = "ud-proto"
+description = "UltraDisplay wire protocol (see docs/protocol.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"

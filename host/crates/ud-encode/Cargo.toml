@@ -1,0 +1,17 @@
+[package]
+name = "ud-encode"
+description = "Low-latency NVENC video encoder (direct NVENC API, runtime-loaded)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+libloading = "0.8"
+
+[build-dependencies]
+bindgen = "0.72"
+
+[dev-dependencies]
+env_logger.workspace = true

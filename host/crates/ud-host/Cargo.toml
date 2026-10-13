@@ -1,0 +1,25 @@
+[package]
+name = "ud-host"
+description = "UltraDisplay host runtime: listeners, pairing, sessions (capture -> encode -> tablet)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+serde.workspace = true
+toml = "0.9"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "crypto"] }
+sha2 = "0.10"
+mdns-sd = "0.13"
+getrandom = "0.3"
+libc = "0.2"
+ud-capture.workspace = true
+ud-encode.workspace = true
+ud-niri.workspace = true
+ud-proto.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true

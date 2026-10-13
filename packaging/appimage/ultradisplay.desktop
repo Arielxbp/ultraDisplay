@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=UltraDisplay
+Comment=Use an Android tablet as a 120 Hz monitor (niri)
+Exec=ultradisplay
+Icon=ultradisplay
+Terminal=false
+Categories=Utility;Settings;
+StartupWMClass=io.github.ultradisplay.Host

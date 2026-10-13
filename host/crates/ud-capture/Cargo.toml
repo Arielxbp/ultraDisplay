@@ -1,0 +1,16 @@
+[package]
+name = "ud-capture"
+description = "Capture a niri output through the Mutter ScreenCast D-Bus API and PipeWire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+pipewire.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
+ud-encode.workspace = true

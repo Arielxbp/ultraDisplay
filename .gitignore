@@ -1,0 +1,51 @@
+# Project-local toolchains: Android SDK, Gradle/Cargo caches, adb keys,
+# and the release signing keystore + passwords (.toolchain/signing/).
+/.toolchain/
+
+# Build output, test runs, logs and captured video/screenshots
+/build/
+
+# Rust
+/host/target/
+**/*.rs.bk
+
+# Android / Gradle / Kotlin
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/app/release/
+/android/captures/
+/android/local.properties
+*.apk
+*.aab
+*.idsig
+
+# Signing keys and secrets (never commit, wherever they end up)
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+keystore.properties
+signing.properties
+.env
+.env.*
+
+# Packaging artifacts
+*.AppImage
+*.pkg.tar.*
+/packaging/niri-virtual/src/
+/packaging/niri-virtual/pkg/
+
+# Local runtime state
+*.log
+*.sock
+
+# Editors / OS
+.vscode/
+.idea/
+*.iml
+*.swp
+*~
+.DS_Store

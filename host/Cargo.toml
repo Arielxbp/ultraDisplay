@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ud-capture",
+    "crates/ud-encode",
+    "crates/ud-niri",
+    "crates/ud-proto",
+    "crates/ud-host",
+    "ultradisplayd",
+    "ultradisplay",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+pipewire = { version = "0.10", features = ["v0_3_33"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ud-capture = { path = "crates/ud-capture" }
+ud-encode = { path = "crates/ud-encode" }
+ud-host = { path = "crates/ud-host" }
+ud-niri = { path = "crates/ud-niri" }
+ud-proto = { path = "crates/ud-proto" }
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[profile.release]
+debug = "line-tables-only"

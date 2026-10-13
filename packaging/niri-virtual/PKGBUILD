@@ -1,0 +1,60 @@
+# niri + virtual output support (niri PR #3800), installed NEXT TO extra/niri.
+# Pick "Niri (virtual outputs)" or plain "Niri" at the login manager (e.g. Ly).
+# Pinned to the niri main commit the patch was tested against. Remove this package once
+# PR #3800 is merged and released.
+
+pkgname=niri-virtual
+_commit=f18f27742bad0735589144880caaa421931d8eb6
+pkgver=26.04.r190.f18f277
+pkgrel=2
+pkgdesc="niri with virtual outputs (PR #3800), as a separate session next to stock niri"
+arch=('x86_64')
+url="https://github.com/niri-wm/niri"
+license=('GPL-3.0-or-later')
+# Stock niri provides niri-shutdown.target and the portal config this session reuses.
+depends=('niri' 'cairo' 'glib2' 'glibc' 'libdisplay-info' 'libgcc' 'libinput'
+         'libpipewire' 'libxkbcommon' 'mesa' 'pango' 'pixman' 'seatd' 'systemd-libs'
+         'xdg-desktop-portal-impl')
+makedepends=('cargo' 'clang' 'git')
+options=('!lto')
+source=("niri::git+https://github.com/niri-wm/niri.git#commit=${_commit}"
+        "0001-virtual-outputs.patch"
+        "niri-virtual-session"
+        "niri-virtual.service"
+        "niri-virtual.desktop")
+sha256sums=('SKIP'
+            '7b739020a05bf59e63ab03b98ba39c5363375934acec0abb2f50cd0223f3f7b6'
+            'SKIP'
+            'SKIP'
+            'SKIP')
+
+prepare() {
+  cd niri
+  patch -Np1 -i "${srcdir}/0001-virtual-outputs.patch"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd niri
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd niri
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --release -- virtual_output
+}
+
+package() {
+  # Off $PATH so /usr/bin/niri stays the stock build.
+  install -Dm755 niri/target/release/niri "${pkgdir}/usr/lib/niri-virtual/niri"
+  install -d "${pkgdir}/usr/bin"
+  ln -s /usr/lib/niri-virtual/niri "${pkgdir}/usr/bin/niri-virtual"
+
+  install -Dm755 niri-virtual-session -t "${pkgdir}/usr/bin/"
+  install -Dm644 niri-virtual.service -t "${pkgdir}/usr/lib/systemd/user/"
+  install -Dm644 niri-virtual.desktop -t "${pkgdir}/usr/share/wayland-sessions/"
+}

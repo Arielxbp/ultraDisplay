@@ -1,0 +1,19 @@
+[package]
+name = "ultradisplay"
+description = "UltraDisplay host app: settings, live status, log, tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_6"] }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+async-channel = "2"
+zbus.workspace = true
+signal-hook = "0.3"
+libc = "0.2"
+ud-host.workspace = true

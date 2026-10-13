@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Niri (virtual outputs)
+Comment=niri with virtual output support (PR #3800), for UltraDisplay
+Exec=niri-virtual-session
+Type=Application
+DesktopNames=niri

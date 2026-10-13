@@ -21,6 +21,7 @@ use ud_host::{Config, Event, Host};
 const APP_ID: &str = "io.github.ultradisplay.Host";
 
 fn main() -> glib::ExitCode {
+    ud_host::stop_fd_inheritance();
     let args: Vec<String> = std::env::args().collect();
     let hidden = args.iter().any(|a| a == "--hidden");
     let config_path = args

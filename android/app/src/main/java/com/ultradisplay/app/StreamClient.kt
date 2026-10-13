@@ -12,6 +12,7 @@ import java.io.DataInputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.util.Timer
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.fixedRateTimer
 
 /** What the HELLO message advertises about this device. */
@@ -132,7 +133,7 @@ class StreamClient(
         send(output, Protocol.HELLO, hello().toString().toByteArray())
 
         val decoder = VideoDecoder(surface)
-        val stats = StatsReporter(decoder, output, conn.label)
+        val stats = StatsReporter(decoder, output, conn.label, if (conn.wifi) wifi else null)
         val wifiLock = if (conn.wifi) {
             wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "ultradisplay").apply { acquire() }
         } else {
@@ -153,7 +154,7 @@ class StreamClient(
                         onStatus("")
                     }
                     Protocol.VIDEO -> {
-                        stats.bytes += msg.payload.size
+                        stats.onVideo(msg.payload.size)
                         val key = (msg.flags and Protocol.FLAG_KEYFRAME) != 0
                         if (!decoder.feed(msg.payload, 8, key, msg.u64())) {
                             send(output, Protocol.REQUEST_IDR)
@@ -207,8 +208,12 @@ class StreamClient(
         private val decoder: VideoDecoder,
         private val output: OutputStream,
         private val label: String,
+        /** Set on Wi-Fi connections: the link quality goes into STATS and the overlay. */
+        private val wifi: WifiManager?,
     ) {
-        @Volatile var bytes = 0L
+        private val bytes = AtomicLong()
+        private val maxGapNanos = AtomicLong()
+        private var lastVideoNanos = 0L // stream thread only
         @Volatile private var rttMs = 0f
         private var lastFrames = 0
         private var lastTime = System.nanoTime()
@@ -222,8 +227,8 @@ class StreamClient(
             val fps = (frames - lastFrames) / secs
             val samples = decoder.decodeSamples.getAndSet(0)
             val decodeMs = if (samples > 0) decoder.decodeNanosTotal.getAndSet(0) / 1e6f / samples else 0f
-            val mbps = bytes * 8 / secs / 1e6f
-            bytes = 0
+            val mbps = bytes.getAndSet(0) * 8 / secs / 1e6f
+            val maxGapMs = maxGapNanos.getAndSet(0) / 1e6f
             lastFrames = frames
             lastTime = now
 
@@ -232,13 +237,36 @@ class StreamClient(
                 .put("decode_ms", decodeMs.toDouble())
                 .put("dropped", 0)
                 .put("rtt_ms", rttMs.toDouble())
+                .put("recv_mbps", mbps.toDouble())
+                .put("max_gap_ms", maxGapMs.toDouble())
+            // RSSI, link speeds and frequency don't need the location permission.
+            @Suppress("DEPRECATION")
+            val link = wifi?.connectionInfo?.takeIf { it.rssi > -127 && it.frequency > 0 }
+            if (link != null) {
+                body.put("wifi_rssi_dbm", link.rssi)
+                    .put("wifi_tx_mbps", link.txLinkSpeedMbps)
+                    .put("wifi_rx_mbps", link.rxLinkSpeedMbps)
+                    .put("wifi_freq_mhz", link.frequency)
+            }
             try {
                 send(output, Protocol.STATS, body.toString().toByteArray())
                 send(output, Protocol.PING, Protocol.u64Bytes(System.nanoTime()))
             } catch (_: IOException) {
             }
             overlay = "%s · %.1f fps · decode %.1f ms · %.1f Mbit/s · rtt %.1f ms"
-                .format(label, fps, decodeMs, mbps, rttMs)
+                .format(label, fps, decodeMs, mbps, rttMs) +
+                (link?.let { " · %d dBm %d Mbit/s".format(it.rssi, it.txLinkSpeedMbps) } ?: "")
+        }
+
+        /** Called on the stream thread for every received video frame. */
+        fun onVideo(size: Int) {
+            bytes.addAndGet(size.toLong())
+            val now = System.nanoTime()
+            if (lastVideoNanos != 0L) {
+                val gap = now - lastVideoNanos
+                maxGapNanos.accumulateAndGet(gap) { a, b -> maxOf(a, b) }
+            }
+            lastVideoNanos = now
         }
 
         fun onPong(sentNanos: Long) {

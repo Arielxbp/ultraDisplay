@@ -75,6 +75,11 @@ Headless (no GUI, e.g. over SSH): `./UltraDisplay-x86_64.AppImage headless`
 (`headless install-service` / `uninstall-service` for a systemd unit). Logs:
 `journalctl --user -u ultradisplayd -f`.
 
+Both write `~/.local/state/ultradisplay/ultradisplay.log` (previous run: `.log.1`). It also
+has debug lines: once a second the host's TCP state (RTT, retransmits, timeouts, queue) and
+twice a second the tablet's Wi-Fi signal, link speed and longest gap between frames. Freezes
+show up as `stall:` warnings; `grep -E 'stall|diag' ~/.local/state/ultradisplay/ultradisplay.log`.
+
 GTK4 and libadwaita come from the system (`gtk4`, `libadwaita`), as do PipeWire and the
 NVIDIA driver.
 

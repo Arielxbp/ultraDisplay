@@ -43,6 +43,7 @@ pub fn accept(
         TlsReader {
             conn: conn.clone(),
             tcp: tcp.try_clone()?,
+            pending: Vec::new(),
         },
         TlsWriter { conn, tcp },
     ))
@@ -51,6 +52,9 @@ pub fn accept(
 pub struct TlsReader {
     conn: Arc<Mutex<ServerConnection>>,
     tcp: TcpStream,
+    /// Ciphertext read from the socket that rustls hasn't taken yet: `read_tls` accepts
+    /// only ~4 KB per call and refuses more while 16 KB of plaintext is unread.
+    pending: Vec<u8>,
 }
 
 impl Read for TlsReader {
@@ -64,18 +68,25 @@ impl Read for TlsReader {
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                     Err(e) => return Err(e),
                 }
+                if !self.pending.is_empty() {
+                    // One chunk at a time, draining plaintext in between (loop top).
+                    let mut rest = &self.pending[..];
+                    conn.read_tls(&mut rest)?;
+                    let used = self.pending.len() - rest.len();
+                    self.pending.drain(..used);
+                    conn.process_new_packets().map_err(io::Error::other)?;
+                    while conn.wants_write() {
+                        conn.write_tls(&mut self.tcp)?;
+                    }
+                    continue;
+                }
             }
             // Wait for more ciphertext without holding the lock, so the writer keeps going.
             let n = self.tcp.read(&mut raw)?;
             if n == 0 {
                 return Ok(0);
             }
-            let mut conn = self.conn.lock().unwrap();
-            conn.read_tls(&mut &raw[..n])?;
-            conn.process_new_packets().map_err(io::Error::other)?;
-            while conn.wants_write() {
-                conn.write_tls(&mut self.tcp)?;
-            }
+            self.pending.extend_from_slice(&raw[..n]);
         }
     }
 }
@@ -102,5 +113,95 @@ impl Write for TlsWriter {
             conn.write_tls(&mut self.tcp)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::pki_types::{ServerName, UnixTime};
+    use rustls::{DigitallySignedStruct, SignatureScheme};
+    use std::net::TcpListener;
+
+    #[derive(Debug)]
+    struct AcceptAny;
+
+    impl ServerCertVerifier for AcceptAny {
+        fn verify_server_cert(
+            &self,
+            _: &CertificateDer<'_>,
+            _: &[CertificateDer<'_>],
+            _: &ServerName<'_>,
+            _: &[u8],
+            _: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _: &[u8],
+            _: &CertificateDer<'_>,
+            _: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _: &[u8],
+            _: &CertificateDer<'_>,
+            _: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    /// A burst larger than rustls takes per `read_tls` call (and than its plaintext
+    /// buffer) must arrive intact; dropping the excess broke decryption on Wi-Fi.
+    #[test]
+    fn large_client_burst_arrives_intact() {
+        let dir = std::env::temp_dir().join(format!("ud-test-tls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let identity = HostIdentity::load_or_create(&dir).unwrap();
+        let config = server_config(&identity).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let data: Vec<u8> = (0..256 * 1024u32).map(|i| (i * 31 % 251) as u8).collect();
+        let sent = data.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let client = std::thread::spawn(move || {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let cfg = rustls::ClientConfig::builder_with_provider(provider)
+                .with_protocol_versions(&[&rustls::version::TLS13])
+                .unwrap()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AcceptAny))
+                .with_no_client_auth();
+            let name = ServerName::try_from("ultradisplay").unwrap();
+            let conn = rustls::ClientConnection::new(Arc::new(cfg), name).unwrap();
+            let mut tls = rustls::StreamOwned::new(conn, TcpStream::connect(addr).unwrap());
+            tls.write_all(&sent).unwrap();
+            tls.flush().unwrap();
+            tls.conn.send_close_notify();
+            tls.flush().unwrap();
+            // Closing with the server's session ticket unread would reset the connection.
+            let _ = done_rx.recv();
+        });
+
+        let (tcp, _) = listener.accept().unwrap();
+        let (mut reader, _writer) = accept(config, tcp).unwrap();
+        let mut got = Vec::new();
+        reader.read_to_end(&mut got).unwrap();
+        done_tx.send(()).unwrap();
+        client.join().unwrap();
+        assert_eq!(got.len(), data.len());
+        assert!(got == data);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

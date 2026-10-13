@@ -111,6 +111,22 @@ pub struct ClientStats {
     pub queued: u32,
     #[serde(default)]
     pub rtt_ms: f32,
+    /// Video received since the last report.
+    #[serde(default)]
+    pub recv_mbps: f32,
+    /// Longest gap between two received video frames since the last report (an idle
+    /// desktop sends nothing, so this alone isn't a stall).
+    #[serde(default)]
+    pub max_gap_ms: f32,
+    /// The tablet's Wi-Fi link (absent over USB).
+    #[serde(default)]
+    pub wifi_rssi_dbm: Option<i32>,
+    #[serde(default)]
+    pub wifi_tx_mbps: Option<u32>,
+    #[serde(default)]
+    pub wifi_rx_mbps: Option<u32>,
+    #[serde(default)]
+    pub wifi_freq_mhz: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

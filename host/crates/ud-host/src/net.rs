@@ -43,26 +43,26 @@ pub fn not_sent_bytes(sock: &TcpStream) -> u32 {
     if ret == 0 { n.max(0) as u32 } else { 0 }
 }
 
-/// Kernel view of the connection: smoothed round trip (ms) and congestion window
-/// (segments), from TCP_INFO.
-pub fn tcp_rtt_cwnd(sock: &TcpStream) -> Option<(f32, u32)> {
-    // struct tcp_info: 8 bytes of u8 fields, then u32s; rtt is u32 #15 (µs), snd_cwnd #18.
-    let mut buf = [0u8; 256];
-    let mut len = buf.len() as libc::socklen_t;
+/// The kernel's TCP_INFO for `sock` (fields a kernel doesn't know stay zero).
+pub fn tcp_info(sock: &TcpStream) -> Option<libc::tcp_info> {
+    let mut info: libc::tcp_info = unsafe { std::mem::zeroed() };
+    let mut len = size_of::<libc::tcp_info>() as libc::socklen_t;
     let ret = unsafe {
         libc::getsockopt(
             sock.as_raw_fd(),
             libc::IPPROTO_TCP,
             libc::TCP_INFO,
-            buf.as_mut_ptr().cast(),
+            (&mut info as *mut libc::tcp_info).cast(),
             &mut len,
         )
     };
-    if ret != 0 || (len as usize) < 8 + 4 * 19 {
-        return None;
-    }
-    let u32_at = |i: usize| u32::from_ne_bytes(buf[8 + 4 * i..12 + 4 * i].try_into().unwrap());
-    Some((u32_at(15) as f32 / 1000.0, u32_at(18)))
+    (ret == 0).then_some(info)
+}
+
+/// Kernel view of the connection: smoothed round trip (ms) and congestion window
+/// (segments).
+pub fn tcp_rtt_cwnd(sock: &TcpStream) -> Option<(f32, u32)> {
+    tcp_info(sock).map(|i| (i.tcpi_rtt as f32 / 1000.0, i.tcpi_snd_cwnd))
 }
 
 /// Whether Linux collapses a TCP connection's window after ~200 ms without sending

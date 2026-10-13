@@ -142,8 +142,50 @@ fn parse_position(s: &str) -> Result<(i32, i32), String> {
     Ok((parse(x)?, parse(y)?))
 }
 
+/// Console logging as configured by RUST_LOG (default info), plus the log file at debug.
+struct Logger {
+    console: env_logger::Logger,
+    file: Option<&'static ud_host::logfile::LogFile>,
+}
+
+impl log::Log for Logger {
+    fn enabled(&self, meta: &log::Metadata) -> bool {
+        self.console.enabled(meta) || (self.file.is_some() && ud_host::logfile::wants(meta))
+    }
+
+    fn log(&self, record: &log::Record) {
+        if let Some(file) = self.file {
+            file.write(record);
+        }
+        if self.console.matches(record) {
+            self.console.log(record);
+        }
+    }
+
+    fn flush(&self) {
+        self.console.flush();
+    }
+}
+
+fn init_logging() {
+    let console =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
+    let file = ud_host::logfile::get();
+    let level = if file.is_some() {
+        console.filter().max(log::LevelFilter::Debug)
+    } else {
+        console.filter()
+    };
+    let _ = log::set_boxed_logger(Box::new(Logger { console, file }));
+    log::set_max_level(level);
+    if let Some(file) = file {
+        log::info!("logging to {}", file.path().display());
+    }
+}
+
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    ud_host::stop_fd_inheritance();
+    init_logging();
     let args = Args::parse();
     match args.command {
         // Inside the AppImage the headless daemon is reached with the `headless` argument.

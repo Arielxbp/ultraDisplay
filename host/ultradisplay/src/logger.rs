@@ -1,4 +1,5 @@
-//! Logs to stderr (like the daemon) and mirrors each line into the app's Log page.
+//! Logs to stderr (like the daemon) and mirrors each line into the app's Log page; the
+//! log file ([`ud_host::logfile`]) additionally gets debug lines.
 
 use std::io::Write;
 use std::sync::OnceLock;
@@ -9,17 +10,26 @@ struct Logger {
     level: log::LevelFilter,
 }
 
-impl log::Log for Logger {
-    fn enabled(&self, meta: &log::Metadata) -> bool {
+impl Logger {
+    fn console(&self, meta: &log::Metadata) -> bool {
         meta.level() <= self.level
             // Our crates at the configured level; dependencies only for warnings and errors.
             && (meta.target().starts_with("ud")
                 || meta.target().starts_with("ultradisplay")
                 || meta.level() <= log::Level::Warn)
     }
+}
+
+impl log::Log for Logger {
+    fn enabled(&self, meta: &log::Metadata) -> bool {
+        self.console(meta) || ud_host::logfile::get().is_some_and(|_| ud_host::logfile::wants(meta))
+    }
 
     fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) {
+        if let Some(file) = ud_host::logfile::get() {
+            file.write(record);
+        }
+        if !self.console(record.metadata()) {
             return;
         }
         let time = gtk::glib::DateTime::now_local()
@@ -50,6 +60,10 @@ pub fn init() -> async_channel::Receiver<String> {
     let (tx, rx) = async_channel::bounded(4096);
     let _ = SINK.set(tx);
     let _ = log::set_boxed_logger(Box::new(Logger { level }));
-    log::set_max_level(level);
+    let file = ud_host::logfile::get();
+    log::set_max_level(if file.is_some() { level.max(log::LevelFilter::Debug) } else { level });
+    if let Some(file) = file {
+        log::info!("logging to {}", file.path().display());
+    }
     rx
 }

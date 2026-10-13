@@ -81,6 +81,11 @@ pub struct Conn {
 }
 
 type Writer = Arc<Mutex<BufWriter<Box<dyn Write + Send>>>>;
+/// The tablet's latest STATS, for the encoder's stall diagnostics.
+type LastClient = Arc<Mutex<Option<ClientStats>>>;
+
+/// Frames taking longer than this from capture to the socket are logged as a stall.
+const STALL: Duration = Duration::from_millis(300);
 
 /// Runs one tablet session to completion, reporting it through `shared`'s events.
 pub fn run(conn: Conn, shared: Arc<Shared>) {
@@ -185,8 +190,10 @@ fn run_inner(conn: Conn, shared: &Arc<Shared>, device: &mut Option<String>) -> a
             })?
     };
 
+    let last_client: LastClient = Arc::default();
     let encoder = {
         let slot = slot.clone();
+        let last_client = last_client.clone();
         let writer = writer.clone();
         let force_idr = force_idr.clone();
         let socket = socket.try_clone()?;
@@ -201,6 +208,7 @@ fn run_inner(conn: Conn, shared: &Arc<Shared>, device: &mut Option<String>) -> a
             .spawn(move || {
                 let res = encode_loop(
                     &slot, &writer, &force_idr, params, cuda, &shared, &active, &queue_probe, &live,
+                    &last_client,
                 );
                 // Unblock the reader so the session ends on encoder failure too.
                 let _ = socket.shutdown(Shutdown::Both);
@@ -208,7 +216,7 @@ fn run_inner(conn: Conn, shared: &Arc<Shared>, device: &mut Option<String>) -> a
             })?
     };
 
-    let mut result = read_loop(&mut reader, &writer, &force_idr, shared);
+    let mut result = read_loop(&mut reader, &writer, &force_idr, shared, &last_client);
 
     slot.close();
     stop_capture.stop();
@@ -403,6 +411,7 @@ fn read_loop(
     writer: &Writer,
     force_idr: &AtomicBool,
     shared: &Shared,
+    last_client: &Mutex<Option<ClientStats>>,
 ) -> anyhow::Result<()> {
     let mut last_stats_log = Instant::now();
     loop {
@@ -417,6 +426,17 @@ fn read_loop(
         match msg.ty {
             MsgType::Stats => {
                 let s: ClientStats = msg.json()?;
+                log::debug!(
+                    target: "ud_host::diag",
+                    "tablet: {:.1} fps, decode {:.1} ms, recv {:.1} Mbit/s, max gap {:.0} ms, ping {:.1} ms, {}",
+                    s.fps,
+                    s.decode_ms,
+                    s.recv_mbps,
+                    s.max_gap_ms,
+                    s.rtt_ms,
+                    wifi_desc(&s)
+                );
+                *last_client.lock().unwrap() = Some(s.clone());
                 shared.emit(Event::ClientStats {
                     fps: s.fps,
                     decode_ms: s.decode_ms,
@@ -465,8 +485,10 @@ fn encode_loop(
     zero_copy_active: &AtomicBool,
     socket: &TcpStream,
     live: &LiveSession,
+    last_client: &Mutex<Option<ClientStats>>,
 ) -> anyhow::Result<()> {
     let epoch = Instant::now();
+    let mut diag = Diag::new(socket);
     // GPU pool registered with the current encoder. Declared before `enc` so the encoder
     // (and its NVENC registrations) is dropped first.
     let mut registered_pool: Option<Arc<GpuPool>> = None;
@@ -581,7 +603,8 @@ fn encode_loop(
             enc.request_idr();
         }
 
-        let pts = frame.received.duration_since(epoch).as_micros() as u64;
+        let captured = frame.received;
+        let pts = captured.duration_since(epoch).as_micros() as u64;
         let t = Instant::now();
         let mut keyframe = false;
         let on_output = |out: ud_encode::EncodedFrame<'_>| {
@@ -607,6 +630,7 @@ fn encode_loop(
         }
         rate_window.1 += 1;
         rate_window.2 += t.elapsed();
+        diag.frame(au.len(), keyframe, t.elapsed(), captured.elapsed());
 
         frames += 1;
         bytes += au.len();
@@ -644,6 +668,7 @@ fn encode_loop(
                 queue_ms: std::mem::take(&mut worst_queue_ms),
                 net_rtt_ms: crate::net::tcp_rtt_cwnd(socket).map_or(0.0, |(rtt, _)| rtt),
             });
+            diag.report(socket, rate.current(), window_bytes, secs, last_client);
             (window_bytes, window_encode) = (0, Duration::ZERO);
             rate_window = (Instant::now(), 0, Duration::ZERO);
         }
@@ -671,6 +696,105 @@ fn encode_loop(
         }
     }
     Ok(())
+}
+
+/// Per-second network diagnostics (debug level, i.e. the log file), plus a warning when
+/// frames got stuck on their way out.
+#[derive(Default)]
+struct Diag {
+    frames: u32,
+    keyframes: u32,
+    max_frame: usize,
+    max_write: Duration,
+    /// Capture to fully handed to the socket, worst frame in the window.
+    max_latency: Duration,
+    total_retrans: u32,
+    total_rto: u16,
+}
+
+impl Diag {
+    fn new(socket: &TcpStream) -> Self {
+        let info = crate::net::tcp_info(socket);
+        Self {
+            total_retrans: info.map_or(0, |i| i.tcpi_total_retrans),
+            total_rto: info.map_or(0, |i| i.tcpi_total_rto),
+            ..Self::default()
+        }
+    }
+
+    fn frame(&mut self, bytes: usize, keyframe: bool, write: Duration, latency: Duration) {
+        self.frames += 1;
+        self.keyframes += u32::from(keyframe);
+        self.max_frame = self.max_frame.max(bytes);
+        self.max_write = self.max_write.max(write);
+        self.max_latency = self.max_latency.max(latency);
+    }
+
+    fn report(
+        &mut self,
+        socket: &TcpStream,
+        target_bps: u32,
+        bytes: usize,
+        secs: f32,
+        last_client: &Mutex<Option<ClientStats>>,
+    ) {
+        let Some(i) = crate::net::tcp_info(socket) else { return };
+        let retrans = i.tcpi_total_retrans.wrapping_sub(self.total_retrans);
+        let rto = i.tcpi_total_rto.wrapping_sub(self.total_rto);
+        (self.total_retrans, self.total_rto) = (i.tcpi_total_retrans, i.tcpi_total_rto);
+        let tcp = format!(
+            "tcp rtt {:.1}±{:.1} ms, cwnd {}, ssthresh {}, in flight {}, unsent {} KB, \
+             retrans +{retrans}, timeouts +{rto} (backoff {}), delivery {:.0} Mbit/s",
+            i.tcpi_rtt as f32 / 1000.0,
+            i.tcpi_rttvar as f32 / 1000.0,
+            i.tcpi_snd_cwnd,
+            if i.tcpi_snd_ssthresh >= 0x7fff_ffff { 0 } else { i.tcpi_snd_ssthresh },
+            i.tcpi_unacked,
+            i.tcpi_notsent_bytes / 1024,
+            i.tcpi_backoff,
+            i.tcpi_delivery_rate as f64 * 8.0 / 1e6,
+        );
+        log::debug!(
+            target: "ud_host::diag",
+            "host: {:.1} fps, {:.1} Mbit/s (target {}), {} key, max frame {} KB, \
+             max write {:.0} ms, max capture->sent {:.0} ms | {tcp}",
+            self.frames as f32 / secs,
+            bytes as f32 * 8.0 / secs / 1e6,
+            target_bps / 1_000_000,
+            self.keyframes,
+            self.max_frame / 1024,
+            self.max_write.as_secs_f32() * 1e3,
+            self.max_latency.as_secs_f32() * 1e3,
+        );
+        if self.max_latency > STALL || rto > 0 {
+            let wifi = last_client.lock().unwrap().as_ref().map(wifi_desc);
+            log::warn!(
+                "stall: a frame took {:.0} ms to leave the host (max write {:.0} ms) | {tcp} | tablet {}",
+                self.max_latency.as_secs_f32() * 1e3,
+                self.max_write.as_secs_f32() * 1e3,
+                wifi.as_deref().unwrap_or("no stats yet"),
+            );
+        }
+        *self = Self { total_retrans: self.total_retrans, total_rto: self.total_rto, ..Self::default() };
+    }
+}
+
+fn wifi_desc(s: &ClientStats) -> String {
+    match s.wifi_rssi_dbm {
+        Some(rssi) => format!(
+            "Wi-Fi {rssi} dBm ({}), {} MHz, link tx {} / rx {} Mbit/s",
+            match rssi {
+                -55.. => "strong",
+                -67..=-56 => "good",
+                -75..=-68 => "weak",
+                _ => "very weak",
+            },
+            s.wifi_freq_mhz.unwrap_or(0),
+            s.wifi_tx_mbps.unwrap_or(0),
+            s.wifi_rx_mbps.unwrap_or(0),
+        ),
+        None => "no Wi-Fi info (USB or old app)".into(),
+    }
 }
 
 fn is_disconnect(err: &anyhow::Error) -> bool {
